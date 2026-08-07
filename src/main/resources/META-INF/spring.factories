@@ -1,0 +1,3 @@
+# Auto-configuration for   loan-repayment plugin when dropped into Fineract
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+org.apache.fineract.branch.branchPluginConfiguration

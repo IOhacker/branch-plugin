@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright 2026   Mifos Initiative
+-->
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                   http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.1.xsd">
+
+    <changeSet id="branch-001-branch-payment" author="branch">
+        <preConditions onFail="MARK_RAN">
+            <not>
+                <tableExists tableName="m_branch_branch_payment"/>
+            </not>
+        </preConditions>
+        <createTable tableName="m_branch_branch_payment">
+            <column name="id" type="BIGINT" autoIncrement="true">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="external_id" type="VARCHAR(100)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uk_branch_external_id"/>
+            </column>
+            <column name="resource_id" type="BIGINT"/>
+            <column name="loan_id" type="BIGINT"/>
+            <column name="client_id" type="BIGINT"/>
+            <column name="refund_reference" type="VARCHAR(128)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="deposit_reference" type="VARCHAR(128)"/>
+            <column name="amount" type="DECIMAL(19,6)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="currency" type="VARCHAR(3)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="transaction_date" type="DATE">
+                <constraints nullable="false"/>
+            </column>
+            <column name="branch_id" type="VARCHAR(30)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="operator_id" type="VARCHAR(50)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="terminal_id" type="VARCHAR(30)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="VARCHAR(20)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="receipt_no" type="VARCHAR(64)"/>
+            <column name="balance_after" type="DECIMAL(19,6)"/>
+            <column name="message" type="VARCHAR(500)"/>
+            <column name="note" type="VARCHAR(500)"/>
+            <column name="registered_at" type="TIMESTAMP">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMP"/>
+            <column name="trace_id" type="VARCHAR(64)"/>
+        </createTable>
+        <createIndex tableName="m_branch_branch_payment" indexName="idx_branch_branch_date">
+            <column name="branch_id"/>
+            <column name="transaction_date"/>
+        </createIndex>
+        <createIndex tableName="m_branch_branch_payment" indexName="idx_branch_refund_ref">
+            <column name="refund_reference"/>
+        </createIndex>
+        <createIndex tableName="m_branch_branch_payment" indexName="idx_branch_status">
+            <column name="status"/>
+        </createIndex>
+    </changeSet>
+
+</databaseChangeLog>
