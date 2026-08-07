@@ -145,7 +145,6 @@ class BranchPaymentServiceTest {
     @Test
     void createBranchPayment_rejectsNonMxn() {
         branchRequest.setCurrency("USD");
-        when(paymentRepository.findByExternalId(anyString())).thenReturn(Optional.empty());
 
         BranchApiException ex = assertThrows(BranchApiException.class,
                 () -> service.createBranchPayment(branchRequest, null));
