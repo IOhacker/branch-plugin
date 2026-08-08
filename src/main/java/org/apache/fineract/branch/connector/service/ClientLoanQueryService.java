@@ -79,29 +79,36 @@ public class ClientLoanQueryService {
                            l.principal_amount, l.disbursedon_date,
                            l.principal_outstanding_derived, l.interest_outstanding_derived,
                            l.fee_charges_outstanding_derived, l.penalty_charges_outstanding_derived,
-                           l.total_outstanding_derived, l.total_overdue_derived
+                           l.total_outstanding_derived,
+                           la.total_overdue_derived
                     FROM m_loan l
                     JOIN m_product_loan lp ON lp.id = l.product_id
+                    LEFT JOIN m_loan_arrears_aging la ON la.loan_id = l.id
                     WHERE l.id = ?
                     """;
-        try {
-            LoanBalanceData balance = jdbcTemplate.queryForObject(sql, (rs, rowNum) -> {
-                boolean disbursed = rs.getDate("disbursedon_date") != null;
-                BigDecimal totalOutstanding = rs.getBigDecimal("total_outstanding_derived");
-                BigDecimal totalOverdue = rs.getBigDecimal("total_overdue_derived");
-                return LoanBalanceData.builder().loanId(rs.getLong("id")).accountNo(rs.getString("account_no"))
-                        .externalId(rs.getString("external_id")).productName(rs.getString("product_name"))
-                        .status(mapLoanStatus(rs.getInt("loan_status_id")))
-                        .principal(MoneyData.mxn(rs.getBigDecimal("principal_amount")))
-                        .totalOutstanding(MoneyData.mxn(totalOutstanding))
-                        .principalOutstanding(MoneyData.mxn(rs.getBigDecimal("principal_outstanding_derived")))
-                        .interestOutstanding(MoneyData.mxn(rs.getBigDecimal("interest_outstanding_derived")))
-                        .feeOutstanding(MoneyData.mxn(rs.getBigDecimal("fee_charges_outstanding_derived")))
-                        .penaltyOutstanding(MoneyData.mxn(rs.getBigDecimal("penalty_charges_outstanding_derived")))
-                        .totalOverdue(MoneyData.mxn(totalOverdue)).disbursed(disbursed)
-                        .inArrears(totalOverdue != null && totalOverdue.compareTo(BigDecimal.ZERO) > 0)
-                        .refundReference(rs.getString("external_id")).build();
-            }, loanId);
+            try {
+                LoanBalanceData balance = jdbcTemplate.queryForObject(sql, (rs, rowNum) -> {
+                    boolean disbursed = rs.getDate("disbursedon_date") != null;
+                    BigDecimal totalOutstanding = rs.getBigDecimal("total_outstanding_derived");
+                    BigDecimal totalOverdue = rs.getBigDecimal("total_overdue_derived");   // may be null when no arrears row
+                    return LoanBalanceData.builder()
+                            .loanId(rs.getLong("id"))
+                            .accountNo(rs.getString("account_no"))
+                            .externalId(rs.getString("external_id"))
+                            .productName(rs.getString("product_name"))
+                            .status(mapLoanStatus(rs.getInt("loan_status_id")))
+                            .principal(MoneyData.mxn(rs.getBigDecimal("principal_amount")))
+                            .totalOutstanding(MoneyData.mxn(totalOutstanding))
+                            .principalOutstanding(MoneyData.mxn(rs.getBigDecimal("principal_outstanding_derived")))
+                            .interestOutstanding(MoneyData.mxn(rs.getBigDecimal("interest_outstanding_derived")))
+                            .feeOutstanding(MoneyData.mxn(rs.getBigDecimal("fee_charges_outstanding_derived")))
+                            .penaltyOutstanding(MoneyData.mxn(rs.getBigDecimal("penalty_charges_outstanding_derived")))
+                            .totalOverdue(MoneyData.mxn(totalOverdue))
+                            .disbursed(disbursed)
+                            .inArrears(totalOverdue != null && totalOverdue.compareTo(BigDecimal.ZERO) > 0)
+                            .refundReference(rs.getString("external_id"))
+                            .build();
+                }, loanId);
 
             // Next installment
             try {
