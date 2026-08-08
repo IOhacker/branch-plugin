@@ -42,7 +42,7 @@ Branch system  ──HTTPS──►    Plugin (this JAR)
                               ├─ RefundReferenceService   (resolve reference → loan)
                               ├─ BranchPaymentService     (orchestration + audit)
                               ├─ FineractRepaymentGateway (command=repayment into core)
-                              └─ m_branch_branch_payment (local audit / recon)
+                              └─ m_branch_connector_payment (local audit / recon)
                                        │
                                        ▼
                               Apache Fineract core (loan accounting & schedule)
@@ -69,7 +69,7 @@ cp target/branch-loan-repayment-plugin-*.jar \
    $TOMCAT_HOME/webapps/fineract-provider/WEB-INF/lib/
 ```
 
-Liquibase will create `m_branch_branch_payment` on each tenant at startup.
+Liquibase will create `m_branch_connector_payment` on each tenant at startup.
 
 ## Pending confirmations (see document §15)
 
