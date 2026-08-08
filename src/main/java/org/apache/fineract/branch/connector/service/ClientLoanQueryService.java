@@ -240,4 +240,93 @@ public class ClientLoanQueryService {
     private BigDecimal nullToZero(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
     }
+    
+    /**
+    * Returns the repayment schedules of every loan belonging to the given client id.
+    */
+   public List<RepaymentScheduleData> getRepaymentScheduleByClientId(String clientId) {
+       ClientFileData client = getClientFile(clientId);
+       if (clientId == null) {
+           throw BranchApiException.badRequest("INVALID_CLIENT_ID", "clientId no puede ser nulo");
+       }
+
+       // 1. Obtain all loan ids for the client
+       List<Long> loanIds = jdbcTemplate.queryForList(
+               "SELECT id FROM m_loan WHERE client_id = ? ORDER BY id",
+               Long.class,
+               client.getClientId());
+
+       if (loanIds.isEmpty()) {
+           return List.of(); // or throw not-found if that is preferred
+       }
+
+       // 2. Build a schedule for each loan (re-uses existing logic)
+       List<RepaymentScheduleData> schedules = new ArrayList<>(loanIds.size());
+       for (Long loanId : loanIds) {
+           schedules.add(getRepaymentScheduleByLoanId(loanId));
+       }
+       return schedules;
+   }
+
+   /**
+    * Internal helper – same logic as getRepaymentSchedule(String) but accepts a numeric loan id.
+    * Extracted so both public methods can share it.
+    */
+   public RepaymentScheduleData getRepaymentScheduleByLoanId(Long loanId) {
+       LoanBalanceData balance = getLoanBalanceById(loanId);
+
+       List<RepaymentSchedulePeriodData> periods = jdbcTemplate.query("""
+               SELECT installment, duedate, principal_amount, interest_amount,
+                      fee_charges_amount, penalty_charges_amount,
+                      principal_completed_derived, interest_completed_derived,
+                      fee_charges_completed_derived, penalty_charges_completed_derived,
+                      completed_derived, obligations_met_on_date
+               FROM m_loan_repayment_schedule
+               WHERE loan_id = ?
+               ORDER BY installment
+               """, (rs, rowNum) -> {
+           BigDecimal principalDue = nullToZero(rs.getBigDecimal("principal_amount"));
+           BigDecimal interestDue = nullToZero(rs.getBigDecimal("interest_amount"));
+           BigDecimal feeDue = nullToZero(rs.getBigDecimal("fee_charges_amount"));
+           BigDecimal penaltyDue = nullToZero(rs.getBigDecimal("penalty_charges_amount"));
+           BigDecimal totalDue = principalDue.add(interestDue).add(feeDue).add(penaltyDue);
+
+           BigDecimal principalPaid = nullToZero(rs.getBigDecimal("principal_completed_derived"));
+           BigDecimal interestPaid = nullToZero(rs.getBigDecimal("interest_completed_derived"));
+           BigDecimal feePaid = nullToZero(rs.getBigDecimal("fee_charges_completed_derived"));
+           BigDecimal penaltyPaid = nullToZero(rs.getBigDecimal("penalty_charges_completed_derived"));
+           BigDecimal totalPaid = principalPaid.add(interestPaid).add(feePaid).add(penaltyPaid);
+
+           boolean complete = rs.getBoolean("completed_derived");
+           LocalDate dueDate = rs.getDate("duedate").toLocalDate();
+           boolean overdue = !complete && dueDate.isBefore(LocalDate.now());
+
+           return RepaymentSchedulePeriodData.builder()
+                   .period(rs.getInt("installment"))
+                   .dueDate(dueDate)
+                   .principalDue(principalDue)
+                   .interestDue(interestDue)
+                   .feeChargesDue(feeDue)
+                   .penaltyChargesDue(penaltyDue)
+                   .totalDue(totalDue)
+                   .totalPaid(totalPaid)
+                   .totalOutstanding(totalDue.subtract(totalPaid))
+                   .complete(complete)
+                   .overdue(overdue)
+                   .build();
+       }, loanId);
+
+       return RepaymentScheduleData.builder()
+               .loanId(loanId)
+               .accountNo(balance.getAccountNo())
+               .currency("MXN")
+               .totalPrincipalDisbursed(
+                       balance.getPrincipal() != null ? balance.getPrincipal().getAmount() : BigDecimal.ZERO)
+               .totalOutstanding(
+                       balance.getTotalOutstanding() != null
+                               ? balance.getTotalOutstanding().getAmount()
+                               : BigDecimal.ZERO)
+               .periods(periods)
+               .build();
+   }
 }

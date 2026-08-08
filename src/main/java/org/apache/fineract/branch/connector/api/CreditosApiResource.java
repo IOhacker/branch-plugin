@@ -15,6 +15,7 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.apache.fineract.branch.connector.data.LoanBalanceData;
 import org.apache.fineract.branch.connector.data.PaymentResultData;
@@ -51,6 +52,17 @@ public class CreditosApiResource {
             @QueryParam("associations") String associations, @QueryParam("exclude") String exclude) {
         return clientLoanQueryService.getRepaymentSchedule(identificador);
     }
+    
+    @GET
+    @Path("/calendario/cliente/{identificador}")
+    @Operation(summary = "Consultar calendario de pagos")
+    public List<RepaymentScheduleData> getRepaymentScheduleByClientId(@PathParam("identificador") String identificador,
+            @QueryParam("associations") String associations, @QueryParam("exclude") String exclude) {
+        return clientLoanQueryService.getRepaymentScheduleByClientId(identificador);
+    }
+    
+    
+    
 
     @POST
     @Path("/pagos/{referencia}/transactions")
