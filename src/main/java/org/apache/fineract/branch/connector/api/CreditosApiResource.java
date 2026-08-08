@@ -59,10 +59,7 @@ public class CreditosApiResource {
     public List<RepaymentScheduleData> getRepaymentScheduleByClientId(@PathParam("identificador") String identificador,
             @QueryParam("associations") String associations, @QueryParam("exclude") String exclude) {
         return clientLoanQueryService.getRepaymentScheduleByClientId(identificador);
-    }
-    
-    
-    
+    }    
 
     @POST
     @Path("/pagos/{referencia}/transactions")
