@@ -1,24 +1,17 @@
 /**
- * Copyright 2026   Mifos Initiative
+ * Copyright 2026 Mifos Initiative
  *
- * Orchestrates branch loan repayments:
- *  1. Resolve refund reference → loan
- *  2. Enforce business rules (amount, date, status)
- *  3. Idempotency via externalId
- *  4. Delegate repayment to Fineract core (command=repayment)
- *  5. Persist local audit trail for reconciliation / UNKNOWN handling
+ * Resolves a refund reference to a unique active loan using official
+ * Fineract read services (externalId on m_loan is the primary strategy).
  */
 package org.apache.fineract.branch.connector.service;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -34,7 +27,6 @@ import org.apache.fineract.branch.connector.data.ReversalRequestData;
 import org.apache.fineract.branch.connector.domain.BranchPaymentEntity;
 import org.apache.fineract.branch.connector.domain.BranchPaymentRepository;
 import org.apache.fineract.branch.connector.exception.BranchApiException;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -51,7 +43,6 @@ public class BranchPaymentService {
     private final RefundReferenceService refundReferenceService;
     private final ClientLoanQueryService clientLoanQueryService;
     private final FineractRepaymentGateway repaymentGateway;
-    private final JdbcTemplate jdbcTemplate;
 
     /**
      * Current (legacy) endpoint: POST /creditos/pagos/{referencia}/transactions?command=repayment
@@ -72,8 +63,12 @@ public class BranchPaymentService {
                 throw BranchApiException.conflict("PAYMENT_DUPLICATE_CONFLICT",
                         "externalId ya usado con monto diferente");
             }
-            return PaymentResultData.builder().loanId(e.getLoanId()).clientId(e.getClientId())
-                    .resourceId(e.getResourceId()).resourceExternalId(e.getExternalId()).build();
+            return PaymentResultData.builder()
+                    .loanId(e.getLoanId())
+                    .clientId(e.getClientId())
+                    .resourceId(e.getResourceId())
+                    .resourceExternalId(e.getExternalId())
+                    .build();
         }
 
         validateAmount(request.getTransactionAmount());
@@ -93,12 +88,23 @@ public class BranchPaymentService {
         enforceNoOverpayment(loan, request.getTransactionAmount());
 
         String traceId = UUID.randomUUID().toString();
-        BranchPaymentEntity pending = BranchPaymentEntity.builder().externalId(externalId).loanId(loan.getLoanId())
-                .clientId(resolution.getClient().getClientId()).refundReference(reference)
-                .depositReference(request.getDepositReference()).amount(request.getTransactionAmount())
-                .currency(CURRENCY_MXN).transactionDate(txnDate).branchId("LEGACY")
-                .operatorId("LEGACY").terminalId("LEGACY").status("PENDING").note(request.getNote())
-                .registeredAt(OffsetDateTime.now()).traceId(traceId).build();
+        BranchPaymentEntity pending = BranchPaymentEntity.builder()
+                .externalId(externalId)
+                .loanId(loan.getLoanId())
+                .clientId(resolution.getClient().getClientId())
+                .refundReference(reference)
+                .depositReference(request.getDepositReference())
+                .amount(request.getTransactionAmount())
+                .currency(CURRENCY_MXN)
+                .transactionDate(txnDate)
+                .branchId("LEGACY")
+                .operatorId("LEGACY")
+                .terminalId("LEGACY")
+                .status("PENDING")
+                .note(request.getNote())
+                .registeredAt(OffsetDateTime.now())
+                .traceId(traceId)
+                .build();
         paymentRepository.save(pending);
 
         try {
@@ -108,9 +114,13 @@ public class BranchPaymentService {
             pending.setUpdatedAt(OffsetDateTime.now());
             paymentRepository.save(pending);
 
-            return PaymentResultData.builder().officeId(resolution.getClient().getOfficeId())
-                    .clientId(resolution.getClient().getClientId()).loanId(loan.getLoanId()).resourceId(resourceId)
-                    .resourceExternalId(externalId).build();
+            return PaymentResultData.builder()
+                    .officeId(resolution.getClient().getOfficeId())
+                    .clientId(resolution.getClient().getClientId())
+                    .loanId(loan.getLoanId())
+                    .resourceId(resourceId)
+                    .resourceExternalId(externalId)
+                    .build();
         } catch (Exception ex) {
             log.error("Repayment failed for externalId={} traceId={}", externalId, traceId, ex);
             pending.setStatus("UNKNOWN");
@@ -157,19 +167,36 @@ public class BranchPaymentService {
         String receiptNo = request.getBranch().getBranchId() + "-" + txnDate + "-"
                 + externalId.substring(Math.max(0, externalId.length() - 6));
 
-        BranchPaymentEntity entity = BranchPaymentEntity.builder().externalId(externalId).loanId(loan.getLoanId())
-                .clientId(resolution.getClient().getClientId()).refundReference(request.getRefundReference())
-                .depositReference(request.getDepositReference()).amount(request.getAmount()).currency(CURRENCY_MXN)
-                .transactionDate(txnDate).branchId(request.getBranch().getBranchId())
-                .operatorId(request.getBranch().getOperatorId()).terminalId(request.getBranch().getTerminalId())
-                .status("PENDING").receiptNo(receiptNo).note(request.getNote()).registeredAt(OffsetDateTime.now())
-                .traceId(traceId).build();
+        BranchPaymentEntity entity = BranchPaymentEntity.builder()
+                .externalId(externalId)
+                .loanId(loan.getLoanId())
+                .clientId(resolution.getClient().getClientId())
+                .refundReference(request.getRefundReference())
+                .depositReference(request.getDepositReference())
+                .amount(request.getAmount())
+                .currency(CURRENCY_MXN)
+                .transactionDate(txnDate)
+                .branchId(request.getBranch().getBranchId())
+                .operatorId(request.getBranch().getOperatorId())
+                .terminalId(request.getBranch().getTerminalId())
+                .status("PENDING")
+                .receiptNo(receiptNo)
+                .note(request.getNote())
+                .registeredAt(OffsetDateTime.now())
+                .traceId(traceId)
+                .build();
         paymentRepository.save(entity);
 
-        RepaymentRequestData coreRequest = RepaymentRequestData.builder().transactionDate(request.getTransactionDate())
-                .dateFormat("yyyy-MM-dd").locale("es").paymentTypeId(request.getPaymentTypeId())
-                .transactionAmount(request.getAmount()).externalId(externalId)
-                .note(buildAuditNote(request)).depositReference(request.getDepositReference()).build();
+        RepaymentRequestData coreRequest = RepaymentRequestData.builder()
+                .transactionDate(request.getTransactionDate())
+                .dateFormat("yyyy-MM-dd")
+                .locale("es")
+                .paymentTypeId(request.getPaymentTypeId())
+                .transactionAmount(request.getAmount())
+                .externalId(externalId)
+                .note(buildAuditNote(request))
+                .depositReference(request.getDepositReference())
+                .build();
 
         try {
             Long resourceId = repaymentGateway.executeRepayment(loan.getLoanId(), coreRequest, externalId);
@@ -177,7 +204,7 @@ public class BranchPaymentService {
             entity.setStatus("APPLIED");
             entity.setUpdatedAt(OffsetDateTime.now());
 
-            // Refresh balance after payment
+            // Refresh balance after payment using official read services
             LoanBalanceData after = clientLoanQueryService.getLoanBalanceById(loan.getLoanId());
             if (after.getTotalOutstanding() != null) {
                 entity.setBalanceAfter(after.getTotalOutstanding().getAmount());
@@ -197,7 +224,8 @@ public class BranchPaymentService {
 
     @Transactional(readOnly = true)
     public BranchPaymentResponseData getByExternalId(String externalId) {
-        return paymentRepository.findByExternalId(externalId).map(this::toResponse)
+        return paymentRepository.findByExternalId(externalId)
+                .map(this::toResponse)
                 .orElseThrow(() -> BranchApiException.notFound("PAYMENT_NOT_FOUND",
                         "Pago no encontrado: " + externalId));
     }
@@ -227,12 +255,22 @@ public class BranchPaymentService {
     public List<ReconciliationItemData> getBranchPayments(String branchId, LocalDate from, LocalDate to,
             String status) {
         List<BranchPaymentEntity> rows = paymentRepository.findForReconciliation(branchId, from, to, status);
-        return rows.stream().map(e -> ReconciliationItemData.builder().externalId(e.getExternalId())
-                .resourceId(e.getResourceId()).branchId(e.getBranchId()).operatorId(e.getOperatorId())
-                .terminalId(e.getTerminalId()).refundReference(e.getRefundReference())
-                .depositReference(e.getDepositReference()).amount(e.getAmount()).transactionDate(e.getTransactionDate())
-                .registeredAt(e.getRegisteredAt()).status(e.getStatus())
-                .reconciliationStatus(mapReconStatus(e)).build()).toList();
+        return rows.stream()
+                .map(e -> ReconciliationItemData.builder()
+                        .externalId(e.getExternalId())
+                        .resourceId(e.getResourceId())
+                        .branchId(e.getBranchId())
+                        .operatorId(e.getOperatorId())
+                        .terminalId(e.getTerminalId())
+                        .refundReference(e.getRefundReference())
+                        .depositReference(e.getDepositReference())
+                        .amount(e.getAmount())
+                        .transactionDate(e.getTransactionDate())
+                        .registeredAt(e.getRegisteredAt())
+                        .status(e.getStatus())
+                        .reconciliationStatus(mapReconStatus(e))
+                        .build())
+                .toList();
     }
 
     // ---------- helpers ----------
@@ -248,7 +286,8 @@ public class BranchPaymentService {
     }
 
     private void enforceNoOverpayment(LoanBalanceData loan, BigDecimal amount) {
-        if (loan.getTotalOutstanding() != null && loan.getTotalOutstanding().getAmount() != null
+        if (loan.getTotalOutstanding() != null
+                && loan.getTotalOutstanding().getAmount() != null
                 && amount.compareTo(loan.getTotalOutstanding().getAmount()) > 0) {
             // Default policy: reject. Change when product policy is confirmed.
             throw BranchApiException.unprocessable("OVERPAYMENT_NOT_ALLOWED",
@@ -260,7 +299,8 @@ public class BranchPaymentService {
         try {
             String fmt = StringUtils.hasText(format) ? format : "yyyy-MM-dd";
             // tolerate datetime strings by taking first 10 chars when format is date-only
-            String value = date != null && date.length() > 10 && "yyyy-MM-dd".equals(fmt) ? date.substring(0, 10)
+            String value = date != null && date.length() > 10 && "yyyy-MM-dd".equals(fmt)
+                    ? date.substring(0, 10)
                     : date;
             return LocalDate.parse(value, DateTimeFormatter.ofPattern(fmt.contains(" ") ? "yyyy-MM-dd" : fmt));
         } catch (DateTimeParseException | NullPointerException ex) {
@@ -270,17 +310,28 @@ public class BranchPaymentService {
 
     private String buildAuditNote(BranchPaymentRequestData request) {
         return String.format("Cobro sucursal %s | operador %s | terminal %s | %s",
-                request.getBranch().getBranchId(), request.getBranch().getOperatorId(),
+                request.getBranch().getBranchId(),
+                request.getBranch().getOperatorId(),
                 request.getBranch().getTerminalId(),
                 request.getNote() != null ? request.getNote() : "");
     }
 
     private BranchPaymentResponseData toResponse(BranchPaymentEntity e) {
-        return BranchPaymentResponseData.builder().externalId(e.getExternalId()).status(e.getStatus())
-                .resourceId(e.getResourceId()).loanId(e.getLoanId()).clientId(e.getClientId())
-                .refundReference(e.getRefundReference()).amount(e.getAmount()).currency(e.getCurrency())
-                .transactionDate(e.getTransactionDate()).registeredAt(e.getRegisteredAt()).receiptNo(e.getReceiptNo())
-                .balanceAfter(e.getBalanceAfter()).message(e.getMessage()).build();
+        return BranchPaymentResponseData.builder()
+                .externalId(e.getExternalId())
+                .status(e.getStatus())
+                .resourceId(e.getResourceId())
+                .loanId(e.getLoanId())
+                .clientId(e.getClientId())
+                .refundReference(e.getRefundReference())
+                .amount(e.getAmount())
+                .currency(e.getCurrency())
+                .transactionDate(e.getTransactionDate())
+                .registeredAt(e.getRegisteredAt())
+                .receiptNo(e.getReceiptNo())
+                .balanceAfter(e.getBalanceAfter())
+                .message(e.getMessage())
+                .build();
     }
 
     private String mapReconStatus(BranchPaymentEntity e) {

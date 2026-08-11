@@ -1,25 +1,25 @@
 /**
- * Copyright 2026   Mifos Initiative
+ * Copyright 2026 Mifos Initiative
  *
- * Thin adapter that posts a repayment command into Fineract core.
- * Uses the portfolio command source so all business rules, accounting
- * and schedule updates remain inside Fineract.
- *
- * NOTE: At runtime this class should inject the real PortfolioCommandSourceWritePlatformService
- * / LoanWritePlatformService. The implementation below uses a JDBC fallback for environments
- * where the full Fineract command bus is not yet wired, so the plugin compiles and can be
- * completed once the exact Fineract version/service signatures are confirmed.
+ * Thin adapter that posts a repayment (or reversal) into Fineract core
+ * via the official command bus. All business rules, accounting and
+ * schedule updates remain inside Fineract.
  */
 package org.apache.fineract.branch.connector.service;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import java.util.HashMap;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.fineract.branch.connector.data.RepaymentRequestData;
 import org.apache.fineract.branch.connector.exception.BranchApiException;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.apache.fineract.commands.domain.CommandWrapper;
+import org.apache.fineract.commands.service.CommandWrapperBuilder;
+import org.apache.fineract.commands.service.PortfolioCommandSourceWritePlatformService;
+import org.apache.fineract.infrastructure.core.data.CommandProcessingResult;
+import org.apache.fineract.infrastructure.core.serialization.FromJsonHelper;
 import org.springframework.stereotype.Service;
 
 @Slf4j
@@ -27,22 +27,20 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class FineractRepaymentGateway {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final PortfolioCommandSourceWritePlatformService commandsSourceWritePlatformService;
+    private final FromJsonHelper fromApiJsonHelper;
     private final Gson gson = new Gson();
 
     /**
-     * Execute repayment against the given loan.
-     * Preferred path: call Fineract LoanWritePlatformService.makeLoanRepayment(...)
-     * via the command bus. Fallback documented below for scaffolding.
+     * Execute repayment against the given loan using the official command bus.
      *
      * @return resourceId (m_loan_transaction.id) of the created transaction
      */
     public Long executeRepayment(Long loanId, RepaymentRequestData request, String externalId) {
-        // Build the same JSON body Fineract expects for command=repayment
         Map<String, Object> body = new HashMap<>();
         body.put("transactionDate", request.getTransactionDate());
-        body.put("dateFormat", request.getDateFormat());
-        body.put("locale", request.getLocale());
+        body.put("dateFormat", request.getDateFormat() != null ? request.getDateFormat() : "yyyy-MM-dd");
+        body.put("locale", request.getLocale() != null ? request.getLocale() : "en");
         body.put("paymentTypeId", request.getPaymentTypeId());
         body.put("transactionAmount", request.getTransactionAmount());
         body.put("externalId", externalId);
@@ -50,43 +48,56 @@ public class FineractRepaymentGateway {
             body.put("note", request.getNote());
         }
 
-        log.info("Submitting repayment loanId={} externalId={} amount={}", loanId, externalId,
-                request.getTransactionAmount());
+        String json = gson.toJson(body);
+        log.info("Submitting repayment via command bus loanId={} externalId={} amount={}",
+                loanId, externalId, request.getTransactionAmount());
 
-        /*
-         * PRODUCTION wiring (uncomment when Fineract services are on the classpath):
-         *
-         * JsonCommand command = JsonCommand.from(gson.toJson(body), ...);
-         * CommandProcessingResult result = loanWritePlatformService.makeLoanRepayment(loanId, command, false);
-         * return result.getResourceId();
-         *
-         * Until then we record a placeholder transaction id so the rest of the
-         * orchestration and idempotency layer can be tested end-to-end.
-         */
         try {
-            // Detect if a real transaction already exists for this externalId (idempotency at core level)
-            Long existing = jdbcTemplate.query(
-                    "SELECT id FROM m_loan_transaction WHERE loan_id = ? AND external_id = ? AND is_reversed = 0 LIMIT 1",
-                    rs -> rs.next() ? rs.getLong("id") : null, loanId, externalId);
-            if (existing != null) {
-                return existing;
-            }
-        } catch (Exception ignored) {
-            // table may not have external_id in older schemas
-        }
+            CommandWrapper commandRequest = new CommandWrapperBuilder()
+                    .withJson(json)
+                    .loanRepaymentTransaction(loanId)
+                    .build();
 
-        // Scaffold: return a synthetic id. Replace with real command-bus call.
-        log.warn("FineractRepaymentGateway running in scaffold mode – replace with LoanWritePlatformService call");
-        return System.currentTimeMillis() % 1_000_000L;
+            CommandProcessingResult result = commandsSourceWritePlatformService.logCommandSource(commandRequest);
+            if (result == null || result.getResourceId() == null) {
+                throw BranchApiException.conflict("PAYMENT_STATUS_UNKNOWN",
+                        "Command bus returned empty result for externalId=" + externalId);
+            }
+            return result.getResourceId();
+        } catch (BranchApiException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            log.error("Repayment command failed loanId={} externalId={}", loanId, externalId, ex);
+            throw BranchApiException.conflict("PAYMENT_STATUS_UNKNOWN",
+                    "Resultado incierto; consulte por externalId antes de reintentar. " + ex.getMessage());
+        }
     }
 
+    /**
+     * Reverse / adjust an existing loan transaction via the command bus.
+     */
     public void reverseRepayment(Long loanId, Long transactionId, String reason) {
         log.info("Reversing repayment loanId={} transactionId={} reason={}", loanId, transactionId, reason);
-        /*
-         * PRODUCTION:
-         * loanWritePlatformService.adjustLoanTransaction(loanId, transactionId, command);
-         * or undoWriteOff / reverse depending on Fineract version.
-         */
-        log.warn("FineractRepaymentGateway.reverseRepayment scaffold – wire to LoanWritePlatformService");
+
+        JsonObject body = new JsonObject();
+        body.addProperty("transactionDate", java.time.LocalDate.now().toString());
+        body.addProperty("dateFormat", "yyyy-MM-dd");
+        body.addProperty("locale", "en");
+        body.addProperty("note", reason != null ? reason : "Branch connector reversal");
+
+        String json = gson.toJson(body);
+
+        try {
+            CommandWrapper commandRequest = new CommandWrapperBuilder()
+                    .withJson(json)
+                    .adjustTransaction(loanId, transactionId)
+                    .build();
+
+            commandsSourceWritePlatformService.logCommandSource(commandRequest);
+        } catch (Exception ex) {
+            log.error("Reversal command failed loanId={} transactionId={}", loanId, transactionId, ex);
+            throw BranchApiException.conflict("REVERSAL_FAILED",
+                    "No se pudo revertir la transacción: " + ex.getMessage());
+        }
     }
 }

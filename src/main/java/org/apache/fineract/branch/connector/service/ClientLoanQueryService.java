@@ -1,18 +1,17 @@
 /**
- * Copyright 2026   Mifos Initiative
+ * Copyright 2026 Mifos Initiative
  *
- * Read-side services that wrap Fineract loan/client queries and adapt them
- * to the   contract. Uses JDBC against the tenant schema so the plugin
- * remains independent of internal service refactorings.
+ * Read-side services that wrap official Fineract LoanReadPlatformService /
+ * ClientReadPlatformService and adapt them to the branch connector contract.
+ * Fully multi-tenant – services already honour the current tenant context.
  */
 package org.apache.fineract.branch.connector.service;
 
 import java.math.BigDecimal;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.fineract.branch.connector.data.ClientFileData;
@@ -22,8 +21,16 @@ import org.apache.fineract.branch.connector.data.MoneyData;
 import org.apache.fineract.branch.connector.data.RepaymentScheduleData;
 import org.apache.fineract.branch.connector.data.RepaymentSchedulePeriodData;
 import org.apache.fineract.branch.connector.exception.BranchApiException;
-import org.springframework.dao.EmptyResultDataAccessException;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.apache.fineract.infrastructure.core.domain.ExternalId;
+import org.apache.fineract.infrastructure.core.service.ExternalIdFactory;
+import org.apache.fineract.infrastructure.core.service.Page;
+import org.apache.fineract.infrastructure.core.service.SearchParameters;
+import org.apache.fineract.portfolio.client.data.ClientData;
+import org.apache.fineract.portfolio.client.service.ClientReadPlatformService;
+import org.apache.fineract.portfolio.loanaccount.data.LoanAccountData;
+import org.apache.fineract.portfolio.loanaccount.loanschedule.data.LoanScheduleData;
+import org.apache.fineract.portfolio.loanaccount.loanschedule.data.LoanSchedulePeriodData;
+import org.apache.fineract.portfolio.loanaccount.service.LoanReadPlatformService;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -32,40 +39,25 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class ClientLoanQueryService {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final LoanReadPlatformService loanReadPlatformService;
+    private final ClientReadPlatformService clientReadPlatformService;
 
     public ClientFileData getClientFile(String identifier) {
-        String sql = """
-                SELECT c.id, c.account_no, c.external_id, c.display_name, c.status_enum,
-                       c.office_id, o.name AS office_name, c.mobile_no, c.email_address
-                FROM m_client c
-                LEFT JOIN m_office o ON o.id = c.office_id
-                WHERE c.external_id = ? OR c.account_no = ? OR CAST(c.id AS CHAR) = ?
-                LIMIT 1
-                """;
-        try {
-            return jdbcTemplate.queryForObject(sql, (rs, rowNum) -> mapClient(rs), identifier, identifier, identifier);
-        } catch (EmptyResultDataAccessException ex) {
-            throw BranchApiException.notFound("CLIENT_NOT_FOUND", "Cliente no encontrado: " + identifier);
-        }
+        ClientData client = resolveClient(identifier);
+        return mapClient(client);
     }
 
     public List<LoanSummaryData> getClientAccounts(String identifier) {
-        ClientFileData client = getClientFile(identifier);
-        String sql = """
-                    SELECT l.id, l.account_no, l.external_id, lp.name AS product_name, l.loan_status_id,
-                           l.principal_amount, l.total_outstanding_derived
-                    FROM m_loan l
-                    JOIN m_product_loan lp ON lp.id = l.product_id
-                    WHERE l.client_id = ?
-                    ORDER BY l.id
-                    """;
-        return jdbcTemplate.query(sql, (rs, rowNum) -> LoanSummaryData.builder().loanId(rs.getLong("id"))
-                .accountNo(rs.getString("account_no")).externalId(rs.getString("external_id"))
-                .productName(rs.getString("product_name")).status(mapLoanStatus(rs.getInt("loan_status_id")))
-                .principal(MoneyData.mxn(rs.getBigDecimal("principal_amount")))
-                .totalOutstanding(MoneyData.mxn(rs.getBigDecimal("total_outstanding_derived")))
-                .refundReference(rs.getString("external_id")).build(), client.getClientId());
+        ClientData client = resolveClient(identifier);
+        Page<LoanAccountData> page = loanReadPlatformService.retrieveAll(
+                SearchParameters.builder()
+                        .clientId(client.getId())
+                        .limit(200)
+                        .build());
+        List<LoanAccountData> loans = page != null && page.getPageItems() != null
+                ? page.getPageItems()
+                : List.of();
+        return loans.stream().map(this::mapLoanSummary).collect(Collectors.toList());
     }
 
     public LoanBalanceData getLoanBalance(String identifier) {
@@ -74,259 +66,222 @@ public class ClientLoanQueryService {
     }
 
     public LoanBalanceData getLoanBalanceById(Long loanId) {
-        String sql = """
-                    SELECT l.id, l.account_no, l.external_id, lp.name AS product_name, l.loan_status_id,
-                           l.principal_amount, l.disbursedon_date,
-                           l.principal_outstanding_derived, l.interest_outstanding_derived,
-                           l.fee_charges_outstanding_derived, l.penalty_charges_outstanding_derived,
-                           l.total_outstanding_derived,
-                           la.total_overdue_derived
-                    FROM m_loan l
-                    JOIN m_product_loan lp ON lp.id = l.product_id
-                    LEFT JOIN m_loan_arrears_aging la ON la.loan_id = l.id
-                    WHERE l.id = ?
-                    """;
-            try {
-                LoanBalanceData balance = jdbcTemplate.queryForObject(sql, (rs, rowNum) -> {
-                    boolean disbursed = rs.getDate("disbursedon_date") != null;
-                    BigDecimal totalOutstanding = rs.getBigDecimal("total_outstanding_derived");
-                    BigDecimal totalOverdue = rs.getBigDecimal("total_overdue_derived");   // may be null when no arrears row
-                    return LoanBalanceData.builder()
-                            .loanId(rs.getLong("id"))
-                            .accountNo(rs.getString("account_no"))
-                            .externalId(rs.getString("external_id"))
-                            .productName(rs.getString("product_name"))
-                            .status(mapLoanStatus(rs.getInt("loan_status_id")))
-                            .principal(MoneyData.mxn(rs.getBigDecimal("principal_amount")))
-                            .totalOutstanding(MoneyData.mxn(totalOutstanding))
-                            .principalOutstanding(MoneyData.mxn(rs.getBigDecimal("principal_outstanding_derived")))
-                            .interestOutstanding(MoneyData.mxn(rs.getBigDecimal("interest_outstanding_derived")))
-                            .feeOutstanding(MoneyData.mxn(rs.getBigDecimal("fee_charges_outstanding_derived")))
-                            .penaltyOutstanding(MoneyData.mxn(rs.getBigDecimal("penalty_charges_outstanding_derived")))
-                            .totalOverdue(MoneyData.mxn(totalOverdue))
-                            .disbursed(disbursed)
-                            .inArrears(totalOverdue != null && totalOverdue.compareTo(BigDecimal.ZERO) > 0)
-                            .refundReference(rs.getString("external_id"))
-                            .build();
-                }, loanId);
-
-            // Next installment
-            try {
-                jdbcTemplate.query(
-                        "SELECT duedate, principal_amount + interest_amount + fee_charges_amount + penalty_charges_amount AS total "
-                                + "FROM m_loan_repayment_schedule WHERE loan_id = ? AND completed_derived = 0 "
-                                + "ORDER BY installment ASC LIMIT 1",
-                        rs -> {
-                            if (rs.next()) {
-                                balance.setNextDueDate(rs.getDate("duedate").toLocalDate());
-                                balance.setNextInstallmentAmount(MoneyData.mxn(rs.getBigDecimal("total")));
-                            }
-                        }, loanId);
-            } catch (Exception ignored) {
-                // optional enrichment
-            }
-            return balance;
-        } catch (EmptyResultDataAccessException ex) {
+        LoanAccountData loan = loanReadPlatformService.retrieveOne(loanId);
+        if (loan == null) {
             throw BranchApiException.notFound("LOAN_NOT_FOUND", "Crédito no encontrado: " + loanId);
         }
+        return mapLoanBalance(loan);
     }
 
     public ClientFileData getClientByLoanId(Long loanId) {
-        String sql = """
-                SELECT c.id, c.account_no, c.external_id, c.display_name, c.status_enum,
-                       c.office_id, o.name AS office_name, c.mobile_no, c.email_address
-                FROM m_client c
-                JOIN m_loan l ON l.client_id = c.id
-                LEFT JOIN m_office o ON o.id = c.office_id
-                WHERE l.id = ?
-                """;
-        try {
-            return jdbcTemplate.queryForObject(sql, (rs, rowNum) -> mapClient(rs), loanId);
-        } catch (EmptyResultDataAccessException ex) {
+        LoanAccountData loan = loanReadPlatformService.retrieveOne(loanId);
+        if (loan == null || loan.getClientId() == null) {
             throw BranchApiException.notFound("CLIENT_NOT_FOUND", "Cliente del crédito no encontrado");
         }
+        ClientData client = clientReadPlatformService.retrieveOne(loan.getClientId());
+        return mapClient(client);
     }
 
     public RepaymentScheduleData getRepaymentSchedule(String identifier) {
         Long loanId = resolveLoanId(identifier);
-        LoanBalanceData balance = getLoanBalanceById(loanId);
+        return getRepaymentScheduleByLoanId(loanId);
+    }
 
-        List<RepaymentSchedulePeriodData> periods = jdbcTemplate.query("""
-                SELECT installment, duedate, principal_amount, interest_amount,
-                       fee_charges_amount, penalty_charges_amount,
-                       principal_completed_derived, interest_completed_derived,
-                       fee_charges_completed_derived, penalty_charges_completed_derived,
-                       completed_derived, obligations_met_on_date
-                FROM m_loan_repayment_schedule
-                WHERE loan_id = ?
-                ORDER BY installment
-                """, (rs, rowNum) -> {
-            BigDecimal principalDue = nullToZero(rs.getBigDecimal("principal_amount"));
-            BigDecimal interestDue = nullToZero(rs.getBigDecimal("interest_amount"));
-            BigDecimal feeDue = nullToZero(rs.getBigDecimal("fee_charges_amount"));
-            BigDecimal penaltyDue = nullToZero(rs.getBigDecimal("penalty_charges_amount"));
-            BigDecimal totalDue = principalDue.add(interestDue).add(feeDue).add(penaltyDue);
-            BigDecimal principalPaid = nullToZero(rs.getBigDecimal("principal_completed_derived"));
-            BigDecimal interestPaid = nullToZero(rs.getBigDecimal("interest_completed_derived"));
-            BigDecimal feePaid = nullToZero(rs.getBigDecimal("fee_charges_completed_derived"));
-            BigDecimal penaltyPaid = nullToZero(rs.getBigDecimal("penalty_charges_completed_derived"));
-            BigDecimal totalPaid = principalPaid.add(interestPaid).add(feePaid).add(penaltyPaid);
-            boolean complete = rs.getBoolean("completed_derived");
-            LocalDate dueDate = rs.getDate("duedate").toLocalDate();
-            boolean overdue = !complete && dueDate.isBefore(LocalDate.now());
-            return RepaymentSchedulePeriodData.builder().period(rs.getInt("installment")).dueDate(dueDate)
-                    .principalDue(principalDue).interestDue(interestDue).feeChargesDue(feeDue)
-                    .penaltyChargesDue(penaltyDue).totalDue(totalDue).totalPaid(totalPaid)
-                    .totalOutstanding(totalDue.subtract(totalPaid)).complete(complete).overdue(overdue).build();
-        }, loanId);
+    public RepaymentScheduleData getRepaymentScheduleByLoanId(Long loanId) {
+        LoanAccountData loan = loanReadPlatformService.retrieveOne(loanId);
+        if (loan == null) {
+            throw BranchApiException.notFound("LOAN_NOT_FOUND", "Crédito no encontrado: " + loanId);
+        }
+        LoanAccountData withSchedule = loanReadPlatformService.fetchRepaymentScheduleData(loan);
 
-        return RepaymentScheduleData.builder().loanId(loanId).accountNo(balance.getAccountNo()).currency("MXN")
-                .totalPrincipalDisbursed(
-                        balance.getPrincipal() != null ? balance.getPrincipal().getAmount() : BigDecimal.ZERO)
-                .totalOutstanding(balance.getTotalOutstanding() != null ? balance.getTotalOutstanding().getAmount()
-                        : BigDecimal.ZERO)
-                .periods(periods).build();
+        LoanScheduleData schedule = withSchedule != null ? withSchedule.getRepaymentSchedule() : null;
+        List<RepaymentSchedulePeriodData> periods = new ArrayList<>();
+        if (schedule != null && schedule.getPeriods() != null) {
+            for (LoanSchedulePeriodData p : schedule.getPeriods()) {
+                if (p.getPeriod() == null) {
+                    continue; // skip disbursement / non-installment periods
+                }
+                BigDecimal totalDue = nullToZero(p.getPrincipalDue())
+                        .add(nullToZero(p.getInterestDue()))
+                        .add(nullToZero(p.getFeeChargesDue()))
+                        .add(nullToZero(p.getPenaltyChargesDue()));
+                BigDecimal totalPaid = nullToZero(p.getPrincipalPaid())
+                        .add(nullToZero(p.getInterestPaid()))
+                        .add(nullToZero(p.getFeeChargesPaid()))
+                        .add(nullToZero(p.getPenaltyChargesPaid()));
+                boolean complete = Boolean.TRUE.equals(p.getComplete());
+                LocalDate dueDate = p.getDueDate();
+                boolean overdue = !complete && dueDate != null && dueDate.isBefore(LocalDate.now());
+
+                periods.add(RepaymentSchedulePeriodData.builder()
+                        .period(p.getPeriod())
+                        .dueDate(dueDate)
+                        .principalDue(nullToZero(p.getPrincipalDue()))
+                        .interestDue(nullToZero(p.getInterestDue()))
+                        .feeChargesDue(nullToZero(p.getFeeChargesDue()))
+                        .penaltyChargesDue(nullToZero(p.getPenaltyChargesDue()))
+                        .totalDue(totalDue)
+                        .totalPaid(totalPaid)
+                        .totalOutstanding(totalDue.subtract(totalPaid))
+                        .complete(complete)
+                        .overdue(overdue)
+                        .build());
+            }
+        }
+
+        BigDecimal principal = loan.getPrincipal() != null ? loan.getPrincipal() : BigDecimal.ZERO;
+        BigDecimal outstanding = loan.getSummary() != null && loan.getSummary().getTotalOutstanding() != null
+                ? loan.getSummary().getTotalOutstanding()
+                : BigDecimal.ZERO;
+
+        return RepaymentScheduleData.builder()
+                .loanId(loanId)
+                .accountNo(loan.getAccountNo())
+                .currency(loan.getCurrency() != null ? loan.getCurrency().getCode() : "MXN")
+                .totalPrincipalDisbursed(principal)
+                .totalOutstanding(outstanding)
+                .periods(periods)
+                .build();
+    }
+
+    public List<RepaymentScheduleData> getRepaymentScheduleByClientId(String clientId) {
+        ClientData client = resolveClient(clientId);
+        Page<LoanAccountData> page = loanReadPlatformService.retrieveAll(
+                SearchParameters.builder()
+                        .clientId(client.getId())
+                        .limit(200)
+                        .build());
+        List<LoanAccountData> loans = page != null && page.getPageItems() != null
+                ? page.getPageItems()
+                : List.of();
+        List<RepaymentScheduleData> result = new ArrayList<>(loans.size());
+        for (LoanAccountData l : loans) {
+            result.add(getRepaymentScheduleByLoanId(l.getId()));
+        }
+        return result;
+    }
+
+    // ---------- private helpers ----------
+
+    private ClientData resolveClient(String identifier) {
+        if (!StringUtils.hasText(identifier)) {
+            throw BranchApiException.badRequest("INVALID_IDENTIFIER", "Identificador de cliente vacío");
+        }
+
+        // 1. Try externalId
+        try {
+            ExternalId ext = ExternalIdFactory.produce(identifier);
+            Long id = clientReadPlatformService.retrieveClientIdByExternalId(ext);
+            if (id != null) {
+                return clientReadPlatformService.retrieveOne(id);
+            }
+        } catch (Exception ignored) {
+            // fall through
+        }
+
+        // 2. Try numeric id
+        try {
+            Long numeric = Long.valueOf(identifier);
+            return clientReadPlatformService.retrieveOne(numeric);
+        } catch (NumberFormatException ignored) {
+            // fall through
+        } catch (Exception ex) {
+            // not found or other platform exception
+            throw BranchApiException.notFound("CLIENT_NOT_FOUND", "Cliente no encontrado: " + identifier);
+        }
+
+        throw BranchApiException.notFound("CLIENT_NOT_FOUND", "Cliente no encontrado: " + identifier);
     }
 
     private Long resolveLoanId(String identifier) {
         if (!StringUtils.hasText(identifier)) {
             throw BranchApiException.badRequest("INVALID_IDENTIFIER", "Identificador de crédito vacío");
         }
-        // Try numeric id, account_no, external_id
+
+        // 1. Try externalId
         try {
-            return jdbcTemplate.queryForObject(
-                    "SELECT id FROM m_loan WHERE CAST(id AS CHAR) = ? OR account_no = ? OR external_id = ? LIMIT 1",
-                    Long.class, identifier, identifier, identifier);
-        } catch (EmptyResultDataAccessException ex) {
+            ExternalId ext = ExternalIdFactory.produce(identifier);
+            return loanReadPlatformService.getResolvedLoanId(ext);
+        } catch (Exception ignored) {
+            // fall through
+        }
+
+        // 2. Try numeric id
+        try {
+            return Long.valueOf(identifier);
+        } catch (NumberFormatException ex) {
             throw BranchApiException.notFound("LOAN_NOT_FOUND", "Crédito no encontrado: " + identifier);
         }
     }
 
-    private ClientFileData mapClient(ResultSet rs) throws SQLException {
-        return ClientFileData.builder().clientId(rs.getLong("id")).accountNo(rs.getString("account_no"))
-                .curp(rs.getString("external_id")).displayName(rs.getString("display_name"))
-                .status(mapClientStatus(rs.getInt("status_enum"))).officeId(rs.getLong("office_id"))
-                .officeName(rs.getString("office_name")).mobileNo(rs.getString("mobile_no"))
-                .emailAddress(rs.getString("email_address")).build();
+    private ClientFileData mapClient(ClientData c) {
+        String statusValue = null;
+        if (c.getStatus() != null) {
+            statusValue = c.getStatus().getValue();
+        }
+        String externalIdValue = c.getExternalId() != null ? c.getExternalId().getValue() : null;
+
+        return ClientFileData.builder()
+                .clientId(c.getId())
+                .accountNo(c.getAccountNo())
+                .curp(externalIdValue)
+                .displayName(c.getDisplayName())
+                .status(statusValue)
+                .officeId(c.getOfficeId())
+                .officeName(c.getOfficeName())
+                .mobileNo(c.getMobileNo())
+                .emailAddress(c.getEmailAddress())
+                .build();
     }
 
-    private String mapClientStatus(int statusEnum) {
-        return switch (statusEnum) {
-            case 100 -> "PENDING";
-            case 300 -> "ACTIVE";
-            case 600 -> "CLOSED";
-            case 700 -> "REJECTED";
-            case 800 -> "WITHDRAWN";
-            default -> String.valueOf(statusEnum);
-        };
+    private LoanSummaryData mapLoanSummary(LoanAccountData l) {
+        BigDecimal principal = l.getPrincipal() != null ? l.getPrincipal() : BigDecimal.ZERO;
+        BigDecimal outstanding = l.getSummary() != null && l.getSummary().getTotalOutstanding() != null
+                ? l.getSummary().getTotalOutstanding()
+                : BigDecimal.ZERO;
+        String statusValue = l.getStatus() != null ? l.getStatus().getValue() : null;
+        String externalIdValue = l.getExternalId() != null ? l.getExternalId().getValue() : null;
+
+        return LoanSummaryData.builder()
+                .loanId(l.getId())
+                .accountNo(l.getAccountNo())
+                .externalId(externalIdValue)
+                .productName(l.getLoanProductName())
+                .status(statusValue)
+                .principal(MoneyData.mxn(principal))
+                .totalOutstanding(MoneyData.mxn(outstanding))
+                .refundReference(externalIdValue)
+                .build();
     }
 
-    private String mapLoanStatus(int statusId) {
-        return switch (statusId) {
-            case 100 -> "SUBMITTED";
-            case 200 -> "APPROVED";
-            case 300 -> "ACTIVE";
-            case 303, 304 -> "TRANSFER";
-            case 400 -> "WITHDRAWN";
-            case 500 -> "REJECTED";
-            case 600 -> "CLOSED_OBLIGATIONS_MET";
-            case 601 -> "CLOSED_WRITTEN_OFF";
-            case 602 -> "CLOSED_RESCHEDULED";
-            case 700 -> "OVERPAID";
-            default -> String.valueOf(statusId);
-        };
+    private LoanBalanceData mapLoanBalance(LoanAccountData l) {
+        var summary = l.getSummary();
+        boolean disbursed = l.getTimeline() != null && l.getTimeline().getActualDisbursementDate() != null;
+        BigDecimal totalOutstanding = summary != null ? summary.getTotalOutstanding() : null;
+        BigDecimal totalOverdue = summary != null ? summary.getTotalOverdue() : null;
+        String statusValue = l.getStatus() != null ? l.getStatus().getValue() : null;
+        String externalIdValue = l.getExternalId() != null ? l.getExternalId().getValue() : null;
+
+        return LoanBalanceData.builder()
+                .loanId(l.getId())
+                .accountNo(l.getAccountNo())
+                .externalId(externalIdValue)
+                .productName(l.getLoanProductName())
+                .status(statusValue)
+                .principal(MoneyData.mxn(l.getPrincipal()))
+                .totalOutstanding(MoneyData.mxn(totalOutstanding))
+                .principalOutstanding(MoneyData.mxn(summary != null ? summary.getPrincipalOutstanding() : null))
+                .interestOutstanding(MoneyData.mxn(summary != null ? summary.getInterestOutstanding() : null))
+                .feeOutstanding(MoneyData.mxn(summary != null ? summary.getFeeChargesOutstanding() : null))
+                .penaltyOutstanding(MoneyData.mxn(summary != null ? summary.getPenaltyChargesOutstanding() : null))
+                .totalOverdue(MoneyData.mxn(totalOverdue))
+                .disbursed(disbursed)
+                .inArrears(totalOverdue != null && totalOverdue.compareTo(BigDecimal.ZERO) > 0)
+                .refundReference(externalIdValue)
+                .build();
     }
 
     private BigDecimal nullToZero(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
     }
-    
-    /**
-    * Returns the repayment schedules of every loan belonging to the given client id.
-    */
-   public List<RepaymentScheduleData> getRepaymentScheduleByClientId(String clientId) {
-       ClientFileData client = getClientFile(clientId);
-       if (clientId == null) {
-           throw BranchApiException.badRequest("INVALID_CLIENT_ID", "clientId no puede ser nulo");
-       }
-
-       // 1. Obtain all loan ids for the client
-       List<Long> loanIds = jdbcTemplate.queryForList(
-               "SELECT id FROM m_loan WHERE client_id = ? ORDER BY id",
-               Long.class,
-               client.getClientId());
-
-       if (loanIds.isEmpty()) {
-           return List.of(); // or throw not-found if that is preferred
-       }
-
-       // 2. Build a schedule for each loan (re-uses existing logic)
-       List<RepaymentScheduleData> schedules = new ArrayList<>(loanIds.size());
-       for (Long loanId : loanIds) {
-           schedules.add(getRepaymentScheduleByLoanId(loanId));
-       }
-       return schedules;
-   }
-
-   /**
-    * Internal helper – same logic as getRepaymentSchedule(String) but accepts a numeric loan id.
-    * Extracted so both public methods can share it.
-    */
-   public RepaymentScheduleData getRepaymentScheduleByLoanId(Long loanId) {
-       LoanBalanceData balance = getLoanBalanceById(loanId);
-
-       List<RepaymentSchedulePeriodData> periods = jdbcTemplate.query("""
-               SELECT installment, duedate, principal_amount, interest_amount,
-                      fee_charges_amount, penalty_charges_amount,
-                      principal_completed_derived, interest_completed_derived,
-                      fee_charges_completed_derived, penalty_charges_completed_derived,
-                      completed_derived, obligations_met_on_date
-               FROM m_loan_repayment_schedule
-               WHERE loan_id = ?
-               ORDER BY installment
-               """, (rs, rowNum) -> {
-           BigDecimal principalDue = nullToZero(rs.getBigDecimal("principal_amount"));
-           BigDecimal interestDue = nullToZero(rs.getBigDecimal("interest_amount"));
-           BigDecimal feeDue = nullToZero(rs.getBigDecimal("fee_charges_amount"));
-           BigDecimal penaltyDue = nullToZero(rs.getBigDecimal("penalty_charges_amount"));
-           BigDecimal totalDue = principalDue.add(interestDue).add(feeDue).add(penaltyDue);
-
-           BigDecimal principalPaid = nullToZero(rs.getBigDecimal("principal_completed_derived"));
-           BigDecimal interestPaid = nullToZero(rs.getBigDecimal("interest_completed_derived"));
-           BigDecimal feePaid = nullToZero(rs.getBigDecimal("fee_charges_completed_derived"));
-           BigDecimal penaltyPaid = nullToZero(rs.getBigDecimal("penalty_charges_completed_derived"));
-           BigDecimal totalPaid = principalPaid.add(interestPaid).add(feePaid).add(penaltyPaid);
-
-           boolean complete = rs.getBoolean("completed_derived");
-           LocalDate dueDate = rs.getDate("duedate").toLocalDate();
-           boolean overdue = !complete && dueDate.isBefore(LocalDate.now());
-
-           return RepaymentSchedulePeriodData.builder()
-                   .period(rs.getInt("installment"))
-                   .dueDate(dueDate)
-                   .principalDue(principalDue)
-                   .interestDue(interestDue)
-                   .feeChargesDue(feeDue)
-                   .penaltyChargesDue(penaltyDue)
-                   .totalDue(totalDue)
-                   .totalPaid(totalPaid)
-                   .totalOutstanding(totalDue.subtract(totalPaid))
-                   .complete(complete)
-                   .overdue(overdue)
-                   .build();
-       }, loanId);
-
-       return RepaymentScheduleData.builder()
-               .loanId(loanId)
-               .accountNo(balance.getAccountNo())
-               .currency("MXN")
-               .totalPrincipalDisbursed(
-                       balance.getPrincipal() != null ? balance.getPrincipal().getAmount() : BigDecimal.ZERO)
-               .totalOutstanding(
-                       balance.getTotalOutstanding() != null
-                               ? balance.getTotalOutstanding().getAmount()
-                               : BigDecimal.ZERO)
-               .periods(periods)
-               .build();
-   }
 }
