@@ -2,17 +2,34 @@
 <!--
   Copyright 2026 Mifos Initiative
   Ensures the DATOS_REEMBOLSOS table exists in every tenant schema.
-  Pre-conditions make the change idempotent when the table was created outside Liquibase.
+  Table may already exist (created outside Liquibase) – all steps are idempotent.
 -->
 <databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
                    http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.1.xsd">
 
+    <!--
+      Skip entire create when table OR its primary-key constraint already exists.
+      PostgreSQL folds unquoted names to lower-case; the live table is often
+      created as quoted "DATOS_REEMBOLSOS", so we check both casings and the PK name.
+    -->
     <changeSet id="branch-002-datos-reembolsos" author="branch">
-        <preConditions onFail="MARK_RAN">
+        <preConditions onFail="MARK_RAN" onError="MARK_RAN">
             <not>
-                <tableExists tableName="DATOS_REEMBOLSOS"/>
+                <or>
+                    <tableExists tableName="DATOS_REEMBOLSOS"/>
+                    <tableExists tableName="datos_reembolsos"/>
+                    <primaryKeyExists primaryKeyName="DATOS_REEMBOLSOS_pkey" tableName="DATOS_REEMBOLSOS"/>
+                    <primaryKeyExists primaryKeyName="datos_reembolsos_pkey" tableName="datos_reembolsos"/>
+                    <sqlCheck expectedResult="1">
+                        SELECT CASE WHEN EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_schema = current_schema()
+                              AND upper(table_name) = 'DATOS_REEMBOLSOS'
+                        ) THEN 1 ELSE 0 END
+                    </sqlCheck>
+                </or>
             </not>
         </preConditions>
         <createTable tableName="DATOS_REEMBOLSOS">
@@ -42,19 +59,68 @@
                                  onDelete="RESTRICT"/>
     </changeSet>
 
-    <!-- Index only (table already present in some environments) -->
+    <!-- Index on referenciaRembolso only (table already present) -->
     <changeSet id="branch-002b-datos-reembolsos-index-ref" author="branch">
-        <preConditions onFail="MARK_RAN">
+        <preConditions onFail="MARK_RAN" onError="MARK_RAN">
             <and>
-                <tableExists tableName="DATOS_REEMBOLSOS"/>
+                <sqlCheck expectedResult="1">
+                    SELECT CASE WHEN EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = current_schema()
+                          AND upper(table_name) = 'DATOS_REEMBOLSOS'
+                    ) THEN 1 ELSE 0 END
+                </sqlCheck>
                 <not>
-                    <indexExists tableName="DATOS_REEMBOLSOS" indexName="idx_DATOS_REEMBOLSOS_referencia_rembolso"/>
+                    <or>
+                        <indexExists tableName="DATOS_REEMBOLSOS" indexName="idx_DATOS_REEMBOLSOS_referencia_rembolso"/>
+                        <indexExists tableName="datos_reembolsos" indexName="idx_datos_reembolsos_referencia_rembolso"/>
+                        <sqlCheck expectedResult="1">
+                            SELECT CASE WHEN EXISTS (
+                                SELECT 1 FROM pg_indexes
+                                WHERE schemaname = current_schema()
+                                  AND upper(indexname) = 'IDX_DATOS_REEMBOLSOS_REFERENCIA_REMBOLSO'
+                            ) THEN 1 ELSE 0 END
+                        </sqlCheck>
+                    </or>
                 </not>
             </and>
         </preConditions>
-        <createIndex tableName="DATOS_REEMBOLSOS" indexName="idx_DATOS_REEMBOLSOS_referencia_rembolso">
-            <column name="referenciaRembolso"/>
-        </createIndex>
+        <sql>
+            CREATE INDEX IF NOT EXISTS "idx_DATOS_REEMBOLSOS_referencia_rembolso"
+                ON "DATOS_REEMBOLSOS" ("referenciaRembolso");
+        </sql>
+    </changeSet>
+
+    <!-- Loan_id index only if missing -->
+    <changeSet id="branch-002c-datos-reembolsos-index-loan" author="branch">
+        <preConditions onFail="MARK_RAN" onError="MARK_RAN">
+            <and>
+                <sqlCheck expectedResult="1">
+                    SELECT CASE WHEN EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = current_schema()
+                          AND upper(table_name) = 'DATOS_REEMBOLSOS'
+                    ) THEN 1 ELSE 0 END
+                </sqlCheck>
+                <not>
+                    <or>
+                        <indexExists tableName="DATOS_REEMBOLSOS" indexName="idx_DATOS_REEMBOLSOS_loan_id"/>
+                        <indexExists tableName="datos_reembolsos" indexName="idx_datos_reembolsos_loan_id"/>
+                        <sqlCheck expectedResult="1">
+                            SELECT CASE WHEN EXISTS (
+                                SELECT 1 FROM pg_indexes
+                                WHERE schemaname = current_schema()
+                                  AND upper(indexname) = 'IDX_DATOS_REEMBOLSOS_LOAN_ID'
+                            ) THEN 1 ELSE 0 END
+                        </sqlCheck>
+                    </or>
+                </not>
+            </and>
+        </preConditions>
+        <sql>
+            CREATE INDEX IF NOT EXISTS "idx_DATOS_REEMBOLSOS_loan_id"
+                ON "DATOS_REEMBOLSOS" (loan_id);
+        </sql>
     </changeSet>
 
 </databaseChangeLog>
