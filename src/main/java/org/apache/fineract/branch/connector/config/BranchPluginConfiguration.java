@@ -19,7 +19,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  */
 @Configuration
 @ComponentScan(basePackages = "org.apache.fineract.branch")
-@EntityScan(basePackages = "org.apache.fineract.branch.domain")
-@EnableJpaRepositories(basePackages = "org.apache.fineract.branch.domain")
+@EntityScan(basePackages = "org.apache.fineract.branch.connector.domain")
+@EnableJpaRepositories(basePackages = "org.apache.fineract.branch.connector.domain")
 public class BranchPluginConfiguration {
 }

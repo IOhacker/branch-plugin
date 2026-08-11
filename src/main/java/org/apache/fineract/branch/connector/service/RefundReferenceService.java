@@ -1,8 +1,14 @@
 /**
  * Copyright 2026 Mifos Initiative
  *
- * Resolves a refund reference to a unique active loan using official
- * Fineract read services (externalId on m_loan is the primary strategy).
+ * Resolves a refund reference to a unique active loan.
+ * Strategies (delegated to ClientLoanQueryService.resolveLoanId):
+ *   1. Loan externalId
+ *   2. Loan account number
+ *   3. Numeric loan id
+ *   4. referenciaRembolso from DATOS_REEMBOLSOS (tenant table)
+ *
+ * Fully multi-tenant – relies on Fineract ThreadLocal tenant context.
  */
 package org.apache.fineract.branch.connector.service;
 
@@ -17,9 +23,6 @@ import org.apache.fineract.branch.connector.data.PaymentValidationRequestData;
 import org.apache.fineract.branch.connector.data.PaymentValidationResultData;
 import org.apache.fineract.branch.connector.data.RefundReferenceResolutionData;
 import org.apache.fineract.branch.connector.exception.BranchApiException;
-import org.apache.fineract.infrastructure.core.domain.ExternalId;
-import org.apache.fineract.infrastructure.core.service.ExternalIdFactory;
-import org.apache.fineract.portfolio.loanaccount.service.LoanReadPlatformService;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -28,7 +31,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class RefundReferenceService {
 
-    private final LoanReadPlatformService loanReadPlatformService;
     private final ClientLoanQueryService clientLoanQueryService;
 
     public RefundReferenceResolutionData resolve(String reference) {
@@ -36,9 +38,10 @@ public class RefundReferenceService {
 
         Long loanId;
         try {
-            ExternalId ext = ExternalIdFactory.produce(reference);
-            loanId = loanReadPlatformService.getResolvedLoanId(ext);
-        } catch (Exception ex) {
+            // Uses the multi-strategy resolver (externalId / accountNo / id / referenciaRembolso)
+            LoanBalanceData loan = clientLoanQueryService.getLoanBalance(reference);
+            loanId = loan.getLoanId();
+        } catch (BranchApiException ex) {
             throw BranchApiException.notFound("REFERENCE_NOT_FOUND",
                     "Referencia de reembolso no encontrada: " + reference);
         }

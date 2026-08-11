@@ -4,6 +4,16 @@
  * Read-side services that wrap official Fineract LoanReadPlatformService /
  * ClientReadPlatformService and adapt them to the branch connector contract.
  * Fully multi-tenant – services already honour the current tenant context.
+ *
+ * Loan lookup strategies (in order):
+ *   1. Loan externalId
+ *   2. Loan account number (m_loan.account_no)
+ *   3. Numeric loan id
+ *   4. referenciaRembolso from DATOS_REEMBOLSOS (tenant table)
+ *
+ * Client lookup strategies (in order):
+ *   1. Client externalId
+ *   2. Numeric client id
  */
 package org.apache.fineract.branch.connector.service;
 
@@ -11,6 +21,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +31,8 @@ import org.apache.fineract.branch.connector.data.LoanSummaryData;
 import org.apache.fineract.branch.connector.data.MoneyData;
 import org.apache.fineract.branch.connector.data.RepaymentScheduleData;
 import org.apache.fineract.branch.connector.data.RepaymentSchedulePeriodData;
+import org.apache.fineract.branch.connector.domain.DatosReembolsoEntity;
+import org.apache.fineract.branch.connector.domain.DatosReembolsoRepository;
 import org.apache.fineract.branch.connector.exception.BranchApiException;
 import org.apache.fineract.infrastructure.core.domain.ExternalId;
 import org.apache.fineract.infrastructure.core.service.ExternalIdFactory;
@@ -41,6 +54,7 @@ public class ClientLoanQueryService {
 
     private final LoanReadPlatformService loanReadPlatformService;
     private final ClientReadPlatformService clientReadPlatformService;
+    private final DatosReembolsoRepository datosReembolsoRepository;
 
     public ClientFileData getClientFile(String identifier) {
         ClientData client = resolveClient(identifier);
@@ -193,25 +207,93 @@ public class ClientLoanQueryService {
         throw BranchApiException.notFound("CLIENT_NOT_FOUND", "Cliente no encontrado: " + identifier);
     }
 
+    /**
+     * Resolves a loan identifier that can be:
+     * <ul>
+     *   <li>loan externalId</li>
+     *   <li>loan account number (m_loan.account_no)</li>
+     *   <li>numeric loan id</li>
+     *   <li>referenciaRembolso stored in DATOS_REEMBOLSOS</li>
+     * </ul>
+     */
     private Long resolveLoanId(String identifier) {
         if (!StringUtils.hasText(identifier)) {
             throw BranchApiException.badRequest("INVALID_IDENTIFIER", "Identificador de crédito vacío");
         }
 
-        // 1. Try externalId
+        // 1. Try loan externalId
         try {
             ExternalId ext = ExternalIdFactory.produce(identifier);
-            return loanReadPlatformService.getResolvedLoanId(ext);
+            Long id = loanReadPlatformService.getResolvedLoanId(ext);
+            if (id != null) {
+                log.debug("Resolved loan by externalId: {} -> {}", identifier, id);
+                return id;
+            }
         } catch (Exception ignored) {
             // fall through
         }
 
-        // 2. Try numeric id
-        try {
-            return Long.valueOf(identifier);
-        } catch (NumberFormatException ex) {
-            throw BranchApiException.notFound("LOAN_NOT_FOUND", "Crédito no encontrado: " + identifier);
+        // 2. Try account number (m_loan.account_no)
+        Long byAccountNo = resolveLoanIdByAccountNo(identifier);
+        if (byAccountNo != null) {
+            log.debug("Resolved loan by accountNo: {} -> {}", identifier, byAccountNo);
+            return byAccountNo;
         }
+
+        // 3. Try numeric id
+        try {
+            Long numeric = Long.valueOf(identifier);
+            // Verify it exists
+            LoanAccountData loan = loanReadPlatformService.retrieveOne(numeric);
+            if (loan != null) {
+                log.debug("Resolved loan by numeric id: {}", numeric);
+                return numeric;
+            }
+        } catch (NumberFormatException ignored) {
+            // fall through
+        } catch (Exception ex) {
+            // not found – fall through to referenciaRembolso
+        }
+
+        // 4. Try referenciaRembolso from DATOS_REEMBOLSOS (tenant table)
+        Optional<Long> byRef = datosReembolsoRepository.findLoanIdByReferenciaRembolso(identifier);
+        if (byRef.isPresent()) {
+            log.debug("Resolved loan by referenciaRembolso: {} -> {}", identifier, byRef.get());
+            return byRef.get();
+        }
+
+        throw BranchApiException.notFound("LOAN_NOT_FOUND",
+                "Crédito no encontrado por accountNo / externalId / id / referenciaRembolso: " + identifier);
+    }
+
+    /**
+     * Looks up a loan by its account number using Fineract SearchParameters.
+     * Returns null when no unique match is found.
+     */
+    private Long resolveLoanIdByAccountNo(String accountNo) {
+        try {
+            Page<LoanAccountData> page = loanReadPlatformService.retrieveAll(
+                    SearchParameters.builder()
+                            .accountNo(accountNo)
+                            .limit(5)
+                            .build());
+            if (page == null || page.getPageItems() == null || page.getPageItems().isEmpty()) {
+                return null;
+            }
+            List<LoanAccountData> matches = page.getPageItems().stream()
+                    .filter(l -> accountNo.equals(l.getAccountNo()))
+                    .toList();
+            if (matches.size() == 1) {
+                return matches.get(0).getId();
+            }
+            if (matches.size() > 1) {
+                log.warn("Multiple loans found for accountNo={}, using first id={}", accountNo, matches.get(0).getId());
+                return matches.get(0).getId();
+            }
+        } catch (Exception ex) {
+            log.debug("AccountNo lookup failed for {}: {}", accountNo, ex.getMessage());
+        }
+        return null;
     }
 
     private ClientFileData mapClient(ClientData c) {
@@ -242,6 +324,9 @@ public class ClientLoanQueryService {
         String statusValue = l.getStatus() != null ? l.getStatus().getValue() : null;
         String externalIdValue = l.getExternalId() != null ? l.getExternalId().getValue() : null;
 
+        // Prefer referenciaRembolso from DATOS_REEMBOLSOS when available
+        String refundRef = resolveRefundReference(l.getId(), externalIdValue);
+
         return LoanSummaryData.builder()
                 .loanId(l.getId())
                 .accountNo(l.getAccountNo())
@@ -250,7 +335,7 @@ public class ClientLoanQueryService {
                 .status(statusValue)
                 .principal(MoneyData.mxn(principal))
                 .totalOutstanding(MoneyData.mxn(outstanding))
-                .refundReference(externalIdValue)
+                .refundReference(refundRef)
                 .build();
     }
 
@@ -261,6 +346,8 @@ public class ClientLoanQueryService {
         BigDecimal totalOverdue = summary != null ? summary.getTotalOverdue() : null;
         String statusValue = l.getStatus() != null ? l.getStatus().getValue() : null;
         String externalIdValue = l.getExternalId() != null ? l.getExternalId().getValue() : null;
+
+        String refundRef = resolveRefundReference(l.getId(), externalIdValue);
 
         return LoanBalanceData.builder()
                 .loanId(l.getId())
@@ -277,8 +364,25 @@ public class ClientLoanQueryService {
                 .totalOverdue(MoneyData.mxn(totalOverdue))
                 .disbursed(disbursed)
                 .inArrears(totalOverdue != null && totalOverdue.compareTo(BigDecimal.ZERO) > 0)
-                .refundReference(externalIdValue)
+                .refundReference(refundRef)
                 .build();
+    }
+
+    /**
+     * Returns the first non-blank referenciaRembolso for the loan, falling back to externalId.
+     */
+    private String resolveRefundReference(Long loanId, String externalIdFallback) {
+        if (loanId != null) {
+            List<DatosReembolsoEntity> refs = datosReembolsoRepository.findByLoanId(loanId);
+            if (refs != null) {
+                for (DatosReembolsoEntity r : refs) {
+                    if (StringUtils.hasText(r.getReferenciaRembolso())) {
+                        return r.getReferenciaRembolso();
+                    }
+                }
+            }
+        }
+        return externalIdFallback;
     }
 
     private BigDecimal nullToZero(BigDecimal v) {
