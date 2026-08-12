@@ -296,14 +296,22 @@ public class BranchPaymentService {
     }
 
     private LocalDate parseDate(String date, String format) {
+        if (!StringUtils.hasText(date)) {
+            throw BranchApiException.unprocessable("PAYMENT_DATE_INVALID", "Fecha de transacción inválida: " + date);
+        }
         try {
-            String fmt = StringUtils.hasText(format) ? format : "yyyy-MM-dd";
-            // tolerate datetime strings by taking first 10 chars when format is date-only
-            String value = date != null && date.length() > 10 && "yyyy-MM-dd".equals(fmt)
-                    ? date.substring(0, 10)
-                    : date;
-            return LocalDate.parse(value, DateTimeFormatter.ofPattern(fmt.contains(" ") ? "yyyy-MM-dd" : fmt));
-        } catch (DateTimeParseException | NullPointerException ex) {
+            String fmt = StringUtils.hasText(format) ? format.trim() : "yyyy-MM-dd";
+            // Fineract repayment stores LocalDate only. Accept pure dates and
+            // datetime strings (e.g. "yyyy-MM-dd HH:mm:ss") by taking the date part.
+            String value = date.trim();
+            if (value.length() >= 10 && (fmt.contains("H") || fmt.contains("m") || fmt.contains("s")
+                    || value.length() > 10 || value.contains("T") || value.contains(" "))) {
+                // Keep only yyyy-MM-dd portion
+                value = value.substring(0, 10);
+                fmt = "yyyy-MM-dd";
+            }
+            return LocalDate.parse(value, DateTimeFormatter.ofPattern(fmt));
+        } catch (DateTimeParseException | IllegalArgumentException ex) {
             throw BranchApiException.unprocessable("PAYMENT_DATE_INVALID", "Fecha de transacción inválida: " + date);
         }
     }
