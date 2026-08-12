@@ -65,6 +65,7 @@ public class FineractRepaymentGateway {
             }
             return result.getResourceId();
         } catch (BranchApiException ex) {
+            log.error(">>> FINERACT RAW ERROR <<<", ex);
             throw ex;
         } catch (Exception ex) {
             log.error("Repayment command failed loanId={} externalId={}", loanId, externalId, ex);
