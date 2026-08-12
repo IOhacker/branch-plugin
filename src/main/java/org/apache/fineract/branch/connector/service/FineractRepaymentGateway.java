@@ -21,6 +21,8 @@ import org.apache.fineract.commands.service.PortfolioCommandSourceWritePlatformS
 import org.apache.fineract.infrastructure.core.data.CommandProcessingResult;
 import org.apache.fineract.infrastructure.core.serialization.FromJsonHelper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Slf4j
 @Service
@@ -36,6 +38,7 @@ public class FineractRepaymentGateway {
      *
      * @return resourceId (m_loan_transaction.id) of the created transaction
      */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Long executeRepayment(Long loanId, RepaymentRequestData request, String externalId) {
         Map<String, Object> body = new HashMap<>();
         body.put("transactionDate", request.getTransactionDate());
@@ -77,6 +80,7 @@ public class FineractRepaymentGateway {
     /**
      * Reverse / adjust an existing loan transaction via the command bus.
      */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void reverseRepayment(Long loanId, Long transactionId, String reason) {
         log.info("Reversing repayment loanId={} transactionId={} reason={}", loanId, transactionId, reason);
 
