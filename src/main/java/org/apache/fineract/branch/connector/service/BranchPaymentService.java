@@ -46,8 +46,7 @@ public class BranchPaymentService {
 
     /**
      * Current (legacy) endpoint: POST /creditos/pagos/{referencia}/transactions?command=repayment
-     */
-    @Transactional
+     */    
     public PaymentResultData createRepaymentByReference(String reference, RepaymentRequestData request,
             String idempotencyKey) {
         String externalId = StringUtils.hasText(idempotencyKey) ? idempotencyKey : request.getExternalId();
@@ -55,7 +54,7 @@ public class BranchPaymentService {
             throw BranchApiException.badRequest("INVALID_REQUEST", "externalId / Idempotency-Key es obligatorio");
         }
 
-        // Idempotency short-circuit
+        // Idempotency short-circuit (read-only, safe)
         Optional<BranchPaymentEntity> existing = paymentRepository.findByExternalId(externalId);
         if (existing.isPresent()) {
             BranchPaymentEntity e = existing.get();
@@ -105,6 +104,7 @@ public class BranchPaymentService {
                 .registeredAt(OffsetDateTime.now())
                 .traceId(traceId)
                 .build();
+        // short TX #1 – commits immediately
         paymentRepository.save(pending);
 
         try {
@@ -112,6 +112,7 @@ public class BranchPaymentService {
             pending.setResourceId(resourceId);
             pending.setStatus("APPLIED");
             pending.setUpdatedAt(OffsetDateTime.now());
+            // short TX #2
             paymentRepository.save(pending);
 
             return PaymentResultData.builder()
@@ -124,9 +125,14 @@ public class BranchPaymentService {
         } catch (Exception ex) {
             log.error("Repayment failed for externalId={} traceId={}", externalId, traceId, ex);
             pending.setStatus("UNKNOWN");
-            pending.setMessage(ex.getMessage());
+            pending.setMessage(ex.getMessage() != null && ex.getMessage().length() > 500
+                    ? ex.getMessage().substring(0, 500) : ex.getMessage());
             pending.setUpdatedAt(OffsetDateTime.now());
-            paymentRepository.save(pending);
+            try {
+                paymentRepository.save(pending); // best-effort audit update
+            } catch (Exception auditEx) {
+                log.error("Failed to persist UNKNOWN status for externalId={}", externalId, auditEx);
+            }
             throw BranchApiException.conflict("PAYMENT_STATUS_UNKNOWN",
                     "Resultado incierto; consulte por externalId antes de reintentar. traceId=" + traceId);
         }
@@ -135,7 +141,6 @@ public class BranchPaymentService {
     /**
      * Proposed atomic branch payment: POST /sucursales/pagos
      */
-    @Transactional
     public BranchPaymentResponseData createBranchPayment(BranchPaymentRequestData request, String idempotencyKey) {
         String externalId = StringUtils.hasText(idempotencyKey) ? idempotencyKey : request.getExternalId();
         if (!StringUtils.hasText(externalId)) {

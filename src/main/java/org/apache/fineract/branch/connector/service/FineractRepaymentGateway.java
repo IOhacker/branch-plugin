@@ -20,6 +20,8 @@ import org.apache.fineract.commands.service.PortfolioCommandSourceWritePlatformS
 import org.apache.fineract.infrastructure.core.data.CommandProcessingResult;
 import org.apache.fineract.infrastructure.core.serialization.FromJsonHelper;
 import org.springframework.stereotype.Service;
+// NO @Transactional here – the command bus owns the transaction.
+// Wrapping it causes TransactionSystemException / RollbackOnly with EclipseLink.
 
 @Slf4j
 @Service
@@ -33,10 +35,14 @@ public class FineractRepaymentGateway {
     /**
      * Execute repayment against the given loan using the official command bus.
      * <p>
-     * Note: No {@code @Transactional} annotation is used here because the command bus
-     * already manages its own transactions. Wrapping it with an additional transaction
-     * can cause {@link org.springframework.transaction.TransactionSystemException} when
-     * the inner command succeeds but the outer transaction is marked rollback‑only.
+     * Intentionally NOT @Transactional. The command bus already manages its own
+     * transaction. An outer transaction (even REQUIRES_NEW in some EclipseLink
+     * configurations) can leave the outer TX marked rollback-only after a successful
+     * inner command, producing:
+     *   org.springframework.transaction.TransactionSystemException:
+     *   Could not commit JPA transaction
+     *   Caused by: jakarta.persistence.RollbackException:
+     *   Transaction "rolled back" because transaction was set to RollbackOnly.
      *
      * @return resourceId (m_loan_transaction.id) of the created transaction
      */
@@ -109,8 +115,7 @@ public class FineractRepaymentGateway {
 
     /**
      * Reverse / adjust an existing loan transaction via the command bus.
-     * <p>
-     * Also no {@code @Transactional} – the command bus handles its own transaction.
+     * Also no @Transactional – the command bus handles its own transaction.
      */
     public void reverseRepayment(Long loanId, Long transactionId, String reason) {
         log.debug("[MONITOR] START reverseRepayment | loanId={} transactionId={} reason={}",
