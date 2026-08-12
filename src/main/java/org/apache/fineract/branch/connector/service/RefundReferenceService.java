@@ -1,14 +1,8 @@
 /**
- * Copyright 2026 Mifos Initiative
+ * Copyright since 2026 Mifos Initiative
  *
- * Resolves a refund reference to a unique active loan.
- * Lookup order:
- *   1. Loan externalId (via LoanReadPlatformService)
- *   2. Loan account number (via ClientLoanQueryService)
- *   3. Numeric loan id
- *   4. referenciaRembolso from DATOS_REEMBOLSOS (via ClientLoanQueryService / repository)
- *
- * Fully multi-tenant – relies on Fineract ThreadLocal tenant context.
+ * <p>This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy
+ * of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 package org.apache.fineract.branch.connector.service;
 

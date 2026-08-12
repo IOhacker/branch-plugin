@@ -1,10 +1,8 @@
 /**
- * Copyright 2026 Mifos Initiative
+ * Copyright since 2026 Mifos Initiative
  *
- * Maps the existing tenant table DATOS_REEMBOLSOS that links a loan to its
- * refund / deposit references (referenciaRembolso, referenciaDeposito).
- * Multi-tenant: table lives in each tenant schema; JPA uses the current
- * tenant connection via Fineract routing DataSource.
+ * <p>This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy
+ * of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 package org.apache.fineract.branch.connector.domain;
 

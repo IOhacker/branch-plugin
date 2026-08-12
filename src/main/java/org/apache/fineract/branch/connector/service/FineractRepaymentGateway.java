@@ -1,9 +1,8 @@
 /**
- * Copyright 2026 Mifos Initiative
+ * Copyright since 2026 Mifos Initiative
  *
- * Thin adapter that posts a repayment (or reversal) into Fineract core
- * via the official command bus. All business rules, accounting and
- * schedule updates remain inside Fineract.
+ * <p>This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy
+ * of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 package org.apache.fineract.branch.connector.service;
 
@@ -40,6 +39,10 @@ public class FineractRepaymentGateway {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Long executeRepayment(Long loanId, RepaymentRequestData request, String externalId) {
+        log.debug("[MONITOR] START executeRepayment | loanId={} externalId={} amount={}",
+                loanId, externalId, request.getTransactionAmount());
+        long startTime = System.currentTimeMillis();
+
         Map<String, Object> body = new HashMap<>();
         body.put("transactionDate", request.getTransactionDate());
         body.put("dateFormat", request.getDateFormat() != null ? request.getDateFormat() : "yyyy-MM-dd");
@@ -52,6 +55,9 @@ public class FineractRepaymentGateway {
         }
 
         String json = gson.toJson(body);
+        log.debug("[MONITOR] Repayment payload prepared | loanId={} externalId={} payload={}",
+                loanId, externalId, json);
+
         log.info("Submitting repayment via command bus loanId={} externalId={} amount={}",
                 loanId, externalId, request.getTransactionAmount());
 
@@ -61,16 +67,40 @@ public class FineractRepaymentGateway {
                     .loanRepaymentTransaction(loanId)
                     .build();
 
+            log.debug("[MONITOR] CommandWrapper built | loanId={} externalId={} entityName={} actionName={}",
+                    loanId, externalId, commandRequest.getEntityName(), commandRequest.getActionName());
+
             CommandProcessingResult result = commandsSourceWritePlatformService.logCommandSource(commandRequest);
+
+            long duration = System.currentTimeMillis() - startTime;
+            log.debug("[MONITOR] Command bus responded | loanId={} externalId={} durationMs={}",
+                    loanId, externalId, duration);
+
             if (result == null || result.getResourceId() == null) {
+                log.warn("[MONITOR] Empty result from command bus | loanId={} externalId={} result={}",
+                        loanId, externalId, result);
                 throw BranchApiException.conflict("PAYMENT_STATUS_UNKNOWN",
                         "Command bus returned empty result for externalId=" + externalId);
             }
+
+            log.debug("[MONITOR] Repayment successful | loanId={} externalId={} resourceId={} officeId={} clientId={} durationMs={}",
+                    loanId, externalId, result.getResourceId(), result.getOfficeId(), result.getClientId(), duration);
+            log.info("[MONITOR] END executeRepayment | loanId={} externalId={} resourceId={} durationMs={}",
+                    loanId, externalId, result.getResourceId(), duration);
+
             return result.getResourceId();
+
         } catch (BranchApiException ex) {
+            long duration = System.currentTimeMillis() - startTime;
+            log.error("[MONITOR] BranchApiException during repayment | loanId={} externalId={} durationMs={} errorCode={}",
+                    loanId, externalId, duration, ex.getCode(), ex);
             log.error(">>> FINERACT RAW ERROR <<<", ex);
             throw ex;
+
         } catch (Exception ex) {
+            long duration = System.currentTimeMillis() - startTime;
+            log.error("[MONITOR] Unexpected exception during repayment | loanId={} externalId={} durationMs={} exceptionType={}",
+                    loanId, externalId, duration, ex.getClass().getName(), ex);
             log.error("Repayment command failed loanId={} externalId={}", loanId, externalId, ex);
             throw BranchApiException.conflict("PAYMENT_STATUS_UNKNOWN",
                     "Resultado incierto; consulte por externalId antes de reintentar. " + ex.getMessage());
@@ -82,7 +112,9 @@ public class FineractRepaymentGateway {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void reverseRepayment(Long loanId, Long transactionId, String reason) {
-        log.info("Reversing repayment loanId={} transactionId={} reason={}", loanId, transactionId, reason);
+        log.debug("[MONITOR] START reverseRepayment | loanId={} transactionId={} reason={}",
+                loanId, transactionId, reason);
+        long startTime = System.currentTimeMillis();
 
         JsonObject body = new JsonObject();
         body.addProperty("transactionDate", java.time.LocalDate.now().toString());
@@ -91,6 +123,10 @@ public class FineractRepaymentGateway {
         body.addProperty("note", reason != null ? reason : "Branch connector reversal");
 
         String json = gson.toJson(body);
+        log.debug("[MONITOR] Reversal payload prepared | loanId={} transactionId={} payload={}",
+                loanId, transactionId, json);
+
+        log.info("Reversing repayment loanId={} transactionId={} reason={}", loanId, transactionId, reason);
 
         try {
             CommandWrapper commandRequest = new CommandWrapperBuilder()
@@ -98,8 +134,27 @@ public class FineractRepaymentGateway {
                     .adjustTransaction(loanId, transactionId)
                     .build();
 
+            log.debug("[MONITOR] CommandWrapper built for reversal | loanId={} transactionId={} entityName={} actionName={}",
+                    loanId, transactionId, commandRequest.getEntityName(), commandRequest.getActionName());
+
             commandsSourceWritePlatformService.logCommandSource(commandRequest);
+
+            long duration = System.currentTimeMillis() - startTime;
+            log.debug("[MONITOR] Reversal successful | loanId={} transactionId={} durationMs={}",
+                    loanId, transactionId, duration);
+            log.info("[MONITOR] END reverseRepayment | loanId={} transactionId={} durationMs={}",
+                    loanId, transactionId, duration);
+
+        } catch (BranchApiException ex) {
+            long duration = System.currentTimeMillis() - startTime;
+            log.error("[MONITOR] BranchApiException during reversal | loanId={} transactionId={} durationMs={} errorCode={}",
+                    loanId, transactionId, duration, ex.getCode(), ex);
+            throw ex;
+
         } catch (Exception ex) {
+            long duration = System.currentTimeMillis() - startTime;
+            log.error("[MONITOR] Unexpected exception during reversal | loanId={} transactionId={} durationMs={} exceptionType={}",
+                    loanId, transactionId, duration, ex.getClass().getName(), ex);
             log.error("Reversal command failed loanId={} transactionId={}", loanId, transactionId, ex);
             throw BranchApiException.conflict("REVERSAL_FAILED",
                     "No se pudo revertir la transacción: " + ex.getMessage());

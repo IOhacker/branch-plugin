@@ -1,8 +1,8 @@
 /**
- * Copyright 2026 Mifos Initiative
+ * Copyright since 2026 Mifos Initiative
  *
- * Resolves a refund reference to a unique active loan using official
- * Fineract read services (externalId on m_loan is the primary strategy).
+ * <p>This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy
+ * of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 package org.apache.fineract.branch.connector.service;
 

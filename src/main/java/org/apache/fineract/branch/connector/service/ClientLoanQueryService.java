@@ -1,19 +1,8 @@
 /**
- * Copyright 2026 Mifos Initiative
+ * Copyright since 2026 Mifos Initiative
  *
- * Read-side services that wrap official Fineract LoanReadPlatformService /
- * ClientReadPlatformService and adapt them to the branch connector contract.
- * Fully multi-tenant – services already honour the current tenant context.
- *
- * Loan lookup strategies (in order):
- *   1. Loan externalId
- *   2. Loan account number (m_loan.account_no)
- *   3. Numeric loan id
- *   4. referenciaRembolso from DATOS_REEMBOLSOS (tenant table)
- *
- * Client lookup strategies (in order):
- *   1. Client externalId
- *   2. Numeric client id
+ * <p>This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy
+ * of the MPL was not distributed with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 package org.apache.fineract.branch.connector.service;
 
