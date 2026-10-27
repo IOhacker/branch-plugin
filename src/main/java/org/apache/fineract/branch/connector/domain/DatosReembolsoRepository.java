@@ -16,6 +16,10 @@ public interface DatosReembolsoRepository extends JpaRepository<DatosReembolsoEn
 
     Optional<DatosReembolsoEntity> findFirstByReferenciaRembolso(String referenciaRembolso);
 
+    Optional<DatosReembolsoEntity> findFirstByReferenciaRembolsoOrderByIdDesc(String referenciaRembolso);
+
+    long countByReferenciaRembolso(String referenciaRembolso);
+
     List<DatosReembolsoEntity> findByLoanId(Long loanId);
 
     @Query("SELECT d.loanId FROM DatosReembolsoEntity d WHERE d.referenciaRembolso = :ref")

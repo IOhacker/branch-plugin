@@ -20,6 +20,7 @@ Aligned with:
 | Repayment by refund reference (current) | `POST /v1.0/creditos/pagos/{referencia}/transactions?command=repayment` |
 | Resolve refund reference **[proposed]** | `GET /v1.0/referencias/reembolso/{referencia}` |
 | Validate payment **[proposed]** | `POST /v1.0/referencias/reembolso/{referencia}/validate` |
+| Loan by refund reference **[new]** | `GET /v1.0/creditos/por-referencia-reembolso/{referenciaRembolso}` (devuelve el mismo payload que `GET /fineract-provider/api/v1/loans/{loanId}`) |
 | Atomic branch payment **[proposed]** | `POST /v1.0/sucursales/pagos` |
 | Query by externalId **[proposed]** | `GET /v1.0/sucursales/pagos/{externalId}` |
 | Reverse payment **[proposed]** | `POST /v1.0/sucursales/pagos/{externalId}/reversal` |

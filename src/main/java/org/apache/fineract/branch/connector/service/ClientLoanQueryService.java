@@ -164,6 +164,57 @@ public class ClientLoanQueryService {
         return result;
     }
 
+    /**
+     * Resolves the loan linked to the given {@code referenciaRembolso} stored in the
+     * {@code DATOS_REEMBOLSOS} data table and returns the full loan data exposed by
+     * the standard {@code GET /v1/loans/{loanId}} endpoint.
+     * <p>
+     * The lookup is delegated to {@link LoanReadPlatformService#retrieveOne(Long)}
+     * so the returned payload is identical to the standard loan endpoint response.
+     *
+     * @param referenciaRembolso value stored in {@code DATOS_REEMBOLSOS.referenciaRembolso}
+     * @return the {@link LoanAccountData} of the linked loan, never null
+     * @throws BranchApiException 400 when the reference is blank, 404 when no row or
+     *         no core loan matches, 409 when the reference links to several loans
+     */
+    public LoanAccountData retrieveLoanByReferenciaRembolso(String referenciaRembolso) {
+        if (!StringUtils.hasText(referenciaRembolso)) {
+            throw BranchApiException.badRequest("INVALID_REFERENCIA_REMBOLSO",
+                    "La referencia de reembolso no puede estar vacía");
+        }
+
+        long matches = datosReembolsoRepository.countByReferenciaRembolso(referenciaRembolso);
+        if (matches == 0L) {
+            throw BranchApiException.notFound("LOAN_NOT_FOUND_BY_REFERENCIA_REMBOLSO",
+                    "No existe crédito vinculado a la referencia de reembolso: " + referenciaRembolso);
+        }
+        if (matches > 1L) {
+            throw BranchApiException.conflict("REFERENCE_AMBIGUOUS",
+                    "La referencia de reembolso está vinculada a múltiples créditos: " + referenciaRembolso);
+        }
+
+        DatosReembolsoEntity datos = datosReembolsoRepository
+                .findFirstByReferenciaRembolsoOrderByIdDesc(referenciaRembolso)
+                .orElseThrow(() -> BranchApiException.notFound("LOAN_NOT_FOUND_BY_REFERENCIA_REMBOLSO",
+                        "No existe crédito vinculado a la referencia de reembolso: " + referenciaRembolso));
+
+        LoanAccountData loan = loanReadPlatformService.retrieveOne(datos.getLoanId());
+        if (loan == null) {
+            throw BranchApiException.notFound("LOAN_NOT_FOUND",
+                    "Crédito no encontrado para referencia de reembolso: " + referenciaRembolso
+                            + " (loanId=" + datos.getLoanId() + ")");
+        }
+
+        // Mirror LoansApiResource.retrieveLoan: populate actualNoTerm the same way
+        Integer actualNoTerm = loanReadPlatformService.countInstallmentsByLoanIdWhereIsAdditionalFalseAndIsDownPaymentFalse(
+                datos.getLoanId());
+        if (actualNoTerm != null) {
+            loan.setActualNoTerm(actualNoTerm);
+        }
+
+        return loan;
+    }
+
     // ---------- private helpers ----------
 
     private ClientData resolveClient(String identifier) {

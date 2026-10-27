@@ -7,6 +7,9 @@
 package org.apache.fineract.branch.connector.api;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.ws.rs.Consumes;
@@ -27,6 +30,9 @@ import org.apache.fineract.branch.connector.data.RepaymentScheduleData;
 import org.apache.fineract.branch.connector.exception.BranchApiException;
 import org.apache.fineract.branch.connector.service.BranchPaymentService;
 import org.apache.fineract.branch.connector.service.ClientLoanQueryService;
+import org.apache.fineract.infrastructure.core.serialization.DefaultToApiJsonSerializer;
+import org.apache.fineract.infrastructure.security.service.PlatformSecurityContext;
+import org.apache.fineract.portfolio.loanaccount.data.LoanAccountData;
 import org.springframework.stereotype.Component;
 
 @Path("/v1/creditos")
@@ -39,6 +45,13 @@ public class CreditosApiResource {
 
     private final ClientLoanQueryService clientLoanQueryService;
     private final BranchPaymentService branchPaymentService;
+    private final PlatformSecurityContext platformSecurityContext;
+    /**
+     * All registered {@link DefaultToApiJsonSerializer} beans; functionally equivalent
+     * for {@link DefaultToApiJsonSerializer#serialize(Object)} (generic type is erased).
+     * Used to serialize {@link LoanAccountData} exactly like the standard loan endpoint.
+     */
+    private final List<DefaultToApiJsonSerializer<LoanAccountData>> loanSerializers;
 
     @GET
     @Path("/balance/{identificador}")
@@ -74,5 +87,30 @@ public class CreditosApiResource {
             throw BranchApiException.badRequest("INVALID_REQUEST", "command debe ser 'repayment'");
         }
         return branchPaymentService.createRepaymentByReference(referencia, body, idempotencyKey);
+    }
+
+    @GET
+    @Path("/por-referencia-reembolso/{referenciaRembolso}")
+    @Operation(summary = "Consultar crédito completo por referencia de reembolso",
+            description = "Resuelve el loanId desde DATOS_REEMBOLSOS.referenciaRembolso y devuelve exactamente el mismo payload que GET /v1/loans/{loanId} del core de Fineract.")
+    @ApiResponse(responseCode = "200", description = "Datos del crédito, idénticos al endpoint estándar de préstamos")
+    @ApiResponse(responseCode = "400", description = "referenciaRembolso vacía o inválida")
+    @ApiResponse(responseCode = "404", description = "Referencia de reembolso no encontrada o préstamo vinculado inexistente")
+    @ApiResponse(responseCode = "409", description = "La referencia está vinculada a varios préstamos (ambigua)")
+    @ApiResponse(responseCode = "403", description = "Sin permiso de lectura sobre préstamos")
+    public String getLoanByReferenciaRembolso(
+            @Parameter(description = "Valor de referenciaRembolso almacenado en DATOS_REEMBOLSOS", required = true)
+            @PathParam("referenciaRembolso") String referenciaRembolso) {
+
+        platformSecurityContext.authenticatedUser().validateHasReadPermission("LOAN");
+
+        LoanAccountData loan = clientLoanQueryService.retrieveLoanByReferenciaRembolso(referenciaRembolso);
+
+        DefaultToApiJsonSerializer<LoanAccountData> serializer = loanSerializers.stream()
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "No hay un DefaultToApiJsonSerializer de LoanAccountData registrado en el contexto"));
+
+        return serializer.serialize(loan);
     }
 }
